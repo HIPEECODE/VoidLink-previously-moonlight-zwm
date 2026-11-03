@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel   # the arm64 pools were out of capacity (2026-11-03)
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
