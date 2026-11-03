@@ -1,0 +1,58 @@
+name: Build unsigned IPA
+
+# Builds the VoidLink iOS app from this branch without code signing, and packages it as an IPA to sideload
+# (AltStore / SideStore / a signing service re-sign it with your own Apple ID).
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Pick the newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcodebuild -list -project VoidLink.xcodeproj
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project VoidLink.xcodeproj -scheme VoidLink -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)|\*\*" || true
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Show the errors
+        if: failure()
+        run: grep -n -B2 -A6 "error:" build.log | head -300
+
+      - name: Package the IPA
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "App: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry VoidLink-unsigned.ipa Payload
+          ls -la VoidLink-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoidLink-unsigned-ipa
+          path: VoidLink-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
