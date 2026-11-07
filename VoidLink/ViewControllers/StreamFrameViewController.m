@@ -1865,9 +1865,25 @@ static __weak StreamFrameViewController *VLSharedStreamFrameViewController = nil
     });
 }
 
+// Tells the host PC which way the phone is held, so it can turn the stream's display to match (Suite, on the
+// host, rotates the virtual monitor and the stream then fills the screen in portrait too): F23 = portrait,
+// F24 = landscape, keys no real keyboard has. Sent when the stream starts and after every rotation.
+- (void)sendOrientationKeyForSize:(CGSize)size {
+#if !TARGET_OS_TV
+    short vk = size.height > size.width ? 0x86 : 0x87;
+    Log(LOG_I, @"Orientation: %@", size.height > size.width ? @"portrait" : @"landscape");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_DOWN, 0);
+        usleep(40000);
+        LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_UP, 0);
+    });
+#endif
+}
+
 - (void) connectionStarted {
     Log(LOG_I, @"Connection started");
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self sendOrientationKeyForSize:self.view.bounds.size];
         // Leave the spinner spinning until it's obscured by
         // the first frame of video.
         self->_stageLabel.hidden = YES;
@@ -2516,6 +2532,7 @@ static __weak StreamFrameViewController *VLSharedStreamFrameViewController = nil
                 [self resetMagnifierStreamViewWithAnimated:NO];
             }];
             [CATransaction commit];
+            [self sendOrientationKeyForSize:self.view.bounds.size];
         });
     }];
     
