@@ -20,10 +20,13 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15-intel   # the arm64 pools were out of capacity (2026-11-03)
+    # Apple-silicon runner (much faster than macos-15-intel). If the arm64 pool is out of capacity
+    # again (it was on 2026-11-03), set the repo variable MAC_RUNNER=macos-15-intel; no code change.
+    runs-on: ${{ vars.MAC_RUNNER || 'macos-15' }}
     timeout-minutes: 90
     env:
       BUILD_NUMBER: ${{ github.run_number }}
+      XCODE_CACHE_DIR: ${{ github.workspace }}/.xcode-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,17 +34,31 @@ jobs:
 
       - name: Pick the newest Xcode
         run: |
-          ls -d /Applications/Xcode*.app
           XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
           sudo xcode-select -s "$XC"
           xcodebuild -version
-          xcodebuild -list -project VoidLink.xcodeproj
+
+      # Swift packages (SVGKit, CocoaLumberjack, OpenSSL, swift-log): reuse the checkouts.
+      - uses: actions/cache@v4
+        with:
+          path: spm
+          key: spm-${{ runner.arch }}-${{ hashFiles('VoidLink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      # Xcode 26 compilation cache: files that didn't change aren't recompiled. A fresh key each run
+      # (the cache can't be overwritten), restored from the newest previous one.
+      - uses: actions/cache@v4
+        with:
+          path: .xcode-cache
+          key: xcc-${{ runner.arch }}-${{ github.run_number }}
+          restore-keys: xcc-${{ runner.arch }}-
 
       - name: Build (unsigned)
         run: |
           set -o pipefail
           xcodebuild -project VoidLink.xcodeproj -scheme VoidLink -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            -clonedSourcePackagesDirPath spm \
+            COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_CAS_PATH="$XCODE_CACHE_DIR" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             build 2>&1 | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)|\*\*" || true
