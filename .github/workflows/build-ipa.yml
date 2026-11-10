@@ -1,16 +1,29 @@
 name: Build unsigned IPA
 
-# Builds the VoidLink iOS app from this branch without code signing, and packages it as an IPA to sideload
-# (AltStore / SideStore / a signing service re-sign it with your own Apple ID).
+# Builds the VoidLink iOS app from Integration without code signing, packages it as an IPA, and
+# publishes it as a GitHub Release (tag build-<run number>). The home server polls the latest
+# release, signs the IPA with its own cert (ota-publish) and updates the OTA install link.
+# The run number is stamped into CFBundleVersion so the installed app knows which build it is.
 
 on:
   push:
+    branches: [ Integration ]
   workflow_dispatch:
+
+# A newer push supersedes a build still in progress.
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # create releases
 
 jobs:
   build:
     runs-on: macos-15-intel   # the arm64 pools were out of capacity (2026-11-03)
     timeout-minutes: 90
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,6 +43,7 @@ jobs:
           xcodebuild -project VoidLink.xcodeproj -scheme VoidLink -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             build 2>&1 | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)|\*\*" || true
           test "${PIPESTATUS[0]}" -eq 0
 
@@ -41,6 +55,11 @@ jobs:
         run: |
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           echo "App: $APP"
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          echo "Version $VERSION, build $BUILT"
+          test "$BUILT" = "$BUILD_NUMBER"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry VoidLink-unsigned.ipa Payload
@@ -50,6 +69,19 @@ jobs:
         with:
           name: VoidLink-unsigned-ipa
           path: VoidLink-unsigned.ipa
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-$BUILD_NUMBER"
+          gh release create "$TAG" VoidLink-unsigned.ipa \
+            --target "$GITHUB_SHA" --latest \
+            --title "VoidLink $VERSION ($BUILD_NUMBER)" \
+            --notes "Unsigned build $BUILD_NUMBER of ${GITHUB_SHA::7} on $GITHUB_REF_NAME: $(git log -1 --format=%s)"
+          # Keep the 10 newest build releases (and their tags); older ones are just clutter.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^build-' | sort -t- -k2 -n -r \
+            | tail -n +11 | while read -r old; do gh release delete "$old" --cleanup-tag --yes; done
 
       - uses: actions/upload-artifact@v4
         if: always()
